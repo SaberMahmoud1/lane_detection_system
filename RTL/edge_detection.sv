@@ -31,18 +31,35 @@
 // binary signal indicating whether an edge is detected based on the threshold.
 ////////////////////////////////////////////////////////////////////////////////
 module edge_detection #(
-    parameter THRESHOLD = 22500
+    parameter THRESHOLD1      = 9500,
+    parameter THRESHOLD2      = 55000
 ) (
-    input  logic signed [15:0] Gx,  // Gradient X
-    input  logic signed [15:0] Gy,  // Gradient Y
-    output logic result             // 1 if edge detected, else 0
+    input  logic               clk,
+    input  logic               rst_n,
+    input  logic signed [11:0] Gx,
+    input  logic signed [11:0] Gy,
+    output logic               result1,
+    output logic               result2
 );
-    logic signed [31:0] magnitude_squared;  // Signed 32-bit to store the squared magnitude
 
-    // Compute squared magnitude: Gx^2 + Gy^2
-    assign magnitude_squared = Gx * Gx + Gy * Gy;
+    // Stage 1: Multipliers (split critical path)
+    logic signed [23:0] Gx_sq, Gy_sq;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            Gx_sq <= 0;
+            Gy_sq <= 0;
+        end else begin
+            Gx_sq <= Gx * Gx;
+            Gy_sq <= Gy * Gy;
+        end
+    end
 
-    // Compare with threshold squared
-    assign result = (magnitude_squared > THRESHOLD) ? 1'b1 : 1'b0;
+    // Stage 2: Sum and compare (can be combinational or pipelined too)
+    logic [24:0] magnitude_squared;
+    always_comb begin
+        magnitude_squared = Gx_sq + Gy_sq;
+        result1 = (magnitude_squared > THRESHOLD1);
+        result2 = (magnitude_squared > THRESHOLD2);
+    end
 
 endmodule

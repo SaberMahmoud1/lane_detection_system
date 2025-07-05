@@ -6,266 +6,276 @@
 // the Sobel filter and determines the number of detected lanes in the image. 
 // It utilizes a column-wise analysis approach, counting pixel clusters and gaps 
 // to estimate lane boundaries.
-
-// The decision module operates by reading the binary edge-detected image data, 
-// analyzing the pixel clusters, and applying a threshold-based approach to 
-// count lanes based on the spacing between detected edges.
-
-// The module maintains a state machine to control the reading and processing 
-// of incoming data, ensuring synchronized operation with other pipeline stages.
-
-// The processed lane count data is output for use in further lane tracking 
-// and vehicle control decision-making processes.
-
-// Parameters:
-// - PIXEL_GAP_THRESHOLD : Defines the maximum allowed gap between detected edges 
-//                         before registering a new lane (default: 10).
-// - IMG_WIDTH          : The width of the input image in pixels (default: 640).
-// - IMG_LENGTH         : The height of the input image in pixels (default: 640).
-// - PIXEL_SIZE         : The bit-width of each grayscale pixel (default: 8).
-//
-// Inputs:
-// - clk          : Clock signal for synchronization with other modules.
-// - rst_n        : Active-low reset signal to initialize the module.
-// - decision_sobel_fifo_rd_data : Binary pixel data (1 = edge, 0 = non-edge).
-// - decision_sobel_fifo_full    : FIFO full indicator.
-// - decision_sobel_fifo_empty   : FIFO empty indicator.
-// - decision_sobel_wr_ack       : Acknowledgment for successful write operations.
-// - decision_sobel_rd_ack       : Acknowledgment for successful read operations.
-// - decision_sobel_fifo_data_count : Number of data elements in the FIFO.
-//
-// Outputs:
-// - decision_sobel_fifo_rd_en : Read enable signal to retrieve data from FIFO.
-// - number_of_lanes           : Estimated number of detected lanes in the frame.
-//
-// States:
-// - IDLE       : Waiting for valid edge-detected data.
-// - WRITE_DATA : Processing pixel data and updating lane count.
-//
-// Internal Processing:
-// - Maintains a counter to track column positions within each row.
-// - Counts clusters of ones (edges) to determine lane candidates.
-// - Uses a threshold-based method to differentiate between distinct lanes.
-// - Stores frequency data to determine the most common lane count.
-// - Resets counters and updates results at the end of each frame.
-//
-// FIFO Interface:
-// - Reads pixel data from the Sobel output FIFO for processing.
-// - Writes processed lane count results to the decision pipeline.
-//
-// The module efficiently processes image frames in real-time and provides lane 
-// count information crucial for lane detection and vehicle navigation.
 ////////////////////////////////////////////////////////////////////////////////
 
 module decision #(
-    parameter PIXEL_GAP_THRESHOLD =10,
+    parameter PIXEL_GAP_THRESHOLD =5,
     parameter IMG_WIDTH =640,
-    parameter IMG_LENGTH =640,
-    parameter PIXEL_SIZE=8
+    parameter IMG_LENGTH =640
 ) 
 (
     input clk,                                        // The Clk signal of the Design which used in the Synchronization with the other modules.
     input rst_n,                                      // A reset signal to reset the whole signals of the design to nulls.
 
-    //FIFO interface shared with decition
-    output logic                           decision_sobel_fifo_rd_en  ,   //when enabled the fifo gives data out
-    input  logic                           decision_sobel_fifo_rd_data,   //the data to be read from the fifo
-    input  logic                           decision_sobel_fifo_full    ,   //fifo full indicator    
-    input  logic                           decision_sobel_fifo_empty   ,   //fifo empty indicator
-    input  logic                           decision_sobel_wr_ack        ,   //ack signal to make sure the write operations is done right.
-    input  logic                           decision_sobel_rd_ack         ,   //ack signal to make sure the read operations is done right. 
-    input  logic [$clog2(IMG_WIDTH):0]     decision_sobel_fifo_data_count ,
-    
+    //interface shared with decision and sobel
+    input sobel_out_valid,
+    input first_threshold_sobel_result,
+    input second_threshold_sobel_result,
+
     //speed control unit interface
     output logic [4-1:0]                   number_of_lanes, //indicates the number of lanes in the image
     output logic [4-1:0]                   current_lane, //indicates the current  lane the car is in
     output logic                           decision_out_valid, //indicates that the output of the decision module is valid
-    output logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundary, //the left  boundary of the current lane in pixels
-    output logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundary //the right boundary of the current lane in pixels
+    output logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundry, //the left  boundary of the current lane in pixels
+    output logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundry //the right boundary of the current lane in pixels
 );
     
-    localparam MIDDLE_OF_THE_IMG = (IMG_WIDTH >> 1);
+localparam IMAGE_CENTER = (IMG_WIDTH >> 1);
+localparam LANE_SPACING = PIXEL_GAP_THRESHOLD;
+localparam [3-1:0] LINE_WIDTH = 3'b111;
 
-    reg decision_read_ready;
+logic start_flag,start_filtering;
 
-typedef enum logic  {
-    IDLE,
-    WRITE_DATA
-} buffer_write_t;        
+logic first_threshold_sobel_result_r,second_threshold_sobel_result_r;
 
-buffer_write_t w_buff_cs,w_buff_ns;
-
-
-logic [$clog2(IMG_WIDTH):0] column_counter; //counter to track the current pixel we are processing
-
-logic [$clog2(IMG_WIDTH):0] ones_counter,last_one_position; //number of ones in each row
-
-logic [$clog2(IMG_LENGTH):0] row;   //counter to track the current pixel we are processing
-
-logic [$clog2(IMG_WIDTH):0] lines_array [16-1:0]; //array to store then number of auccurence of each number of lines from 0 lines to 15 lines the most one accures is most like to be the true number of lines
+logic [$clog2(IMG_WIDTH):0] last_cluster_detected; //number of ones in each row_counter
 
 
-logic prossing_last_row; //indicates that we are currently processing the last row in the image and no other rows left
-logic [$clog2(IMG_WIDTH):0] most_frequent; //most frequent number of lines auccured in the image
+logic [$clog2(IMG_WIDTH + 1)-1:0] column_counter; //counter to track the current pixel we are processing
+logic [$clog2(IMG_LENGTH + 1)-1:0] row_counter;   //counter to track the current pixel we are processing
 
-logic save_lane_boundaries,save_current_lane;
-logic [$clog2(IMG_WIDTH):0] lane_boundaries [16-1:0];
-logic [$clog2(IMG_WIDTH):0] most_frequent_lane_boundaries [16-1:0];
-logic [$clog2(IMG_WIDTH):0] lane_counter; 
+logic [$clog2(IMG_WIDTH):0] lane_boundaries [5-1:0];
+logic [$clog2(IMG_WIDTH):0] lane_boundaries_filtered [5-1:0];
+
+logic [$clog2(IMG_WIDTH):0] lane_boundarie_accurence [5-1:0];
+
+logic row_counter_en;
+
+logic [$clog2(LINE_WIDTH)-1:0] consecutive_ones;
+
+logic cluster_detected;
+
+logic [5-1:0] lines_number;
+logic [5-1:0] right_lines_number;
+
+// Sampled input storage
+logic [11:0] lane_boundaries_filtered_r[4:0];
+logic [2:0] out_stage_counter;
 
 
 /********************************************************************************************************************
 ********************************************************************************************************************/
-// State transation logic
 
-always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        w_buff_cs <= IDLE; 
-    end else begin 
-        w_buff_cs <= w_buff_ns;
-    end
-end
-
-
-always_comb begin : Next_State_logic      
-    case (w_buff_cs)
-             IDLE : begin
-            if(!decision_sobel_fifo_empty) begin
-                w_buff_ns = WRITE_DATA;
-            end else begin
-                w_buff_ns = IDLE;
-            end
-        end
-        WRITE_DATA: begin
-            if((decision_sobel_fifo_data_count <= 1))begin
-             w_buff_ns = IDLE;
-            end else begin
-             w_buff_ns = WRITE_DATA;
-            end
-        end
-        default: w_buff_ns = IDLE;
-    endcase
-end  
-
-
-always_comb begin : output_logic
-    case (w_buff_cs)
-        IDLE:         decision_read_ready = 0;
-        WRITE_DATA:   decision_read_ready = 1;
-        default:      decision_read_ready = 0;
-    endcase
-end
-
-
-
-/********************************************************************************************************************
-***********************************************************************************************************************/
-
+assign row_counter_en = (column_counter == IMG_WIDTH-1) ? 1 : 0;
 
 //choose which fifo to write data into
 
-always_comb begin : demux_the_rd_en
-    decision_sobel_fifo_rd_en = decision_read_ready && !decision_sobel_fifo_empty;
-end
+// Instantiate the counter to count columns 
+    counter #(
+        .MAX_COUNT(IMG_WIDTH-1)
+    ) col_counter (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .en     (start_flag),
+        .count  (column_counter)
+    );
 
+// Instantiate the counter to count columns 
+    counter #(
+        .MAX_COUNT(IMG_LENGTH-1)
+    ) r_counter (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .en     (row_counter_en),
+        .count  (row_counter)
+    );
+
+    shift_register #(
+        .DEPTH($clog2(LINE_WIDTH))
+    ) shift_inst (
+        .clk(clk),
+        .rst_n(rst_n),
+        .enable(start_flag),
+        .din(first_threshold_sobel_result_r),
+        .dout(consecutive_ones)
+    );
+
+    remove_close_duplicates #(
+        .IMG_WIDTH(IMG_WIDTH)
+    ) u_remove_close_duplicates (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(start_filtering),
+        .in_array(lane_boundaries),
+        .importance(lane_boundarie_accurence),
+        .out_array(lane_boundaries_filtered)
+    );
+
+
+always_ff @(posedge clk or negedge rst_n) begin : samble_sobel_results
+    if(!rst_n)begin
+        start_flag <= 1'b0;
+        first_threshold_sobel_result_r <= 1'b0;
+        second_threshold_sobel_result_r <= 1'b0;
+    end else if(sobel_out_valid)begin
+        start_flag <= 1'b1;
+        first_threshold_sobel_result_r <= first_threshold_sobel_result;
+        second_threshold_sobel_result_r <= second_threshold_sobel_result;
+    end else begin
+        start_flag <= 1'b0;
+        first_threshold_sobel_result_r <= 1'b0;
+        second_threshold_sobel_result_r <= 1'b0;
+    end
+end
+    
+/********************************************************************************************************************
+calculate lanes and find boundries
+********************************************************************************************************************/
 
 always_ff @(posedge clk or negedge rst_n) begin : calc_number_of_lanes
 if(!rst_n)begin
-    row <= 1'b0 ;
-    column_counter <= 0;
-    ones_counter <= 0;
-    last_one_position <= 0;
-    number_of_lanes <=0;
-    most_frequent <= 0;
-    lane_counter <= 0;
-    save_lane_boundaries <= 0;
-    save_current_lane <= 0;
-    for (int i = 0; i < 16; i = i + 1) begin
-            lines_array[i] <= 'd0;  // Initialize all elements to zero
-    end
-end else if(decision_sobel_rd_ack)begin
-    
-    column_counter<=column_counter+1;
-
-    if(decision_sobel_fifo_rd_data == 1)begin
-        
-        last_one_position <= column_counter;
-        
-        if(column_counter-last_one_position >= PIXEL_GAP_THRESHOLD || ones_counter == 0)begin
-            ones_counter <= ones_counter + 1;
-            lane_boundaries[lane_counter] <= column_counter;
-            lane_counter <= lane_counter + 1;
+        for (int i = 0; i < 5; i = i + 1) begin
+            lane_boundarie_accurence[i] <= 0;
+            lane_boundaries[i] <= 0;
         end
-    end
-        
-    if(column_counter >= IMG_WIDTH-1)begin
-        if(!prossing_last_row)begin
-            row<=row+1;
-        end
-        column_counter<=0;
-        ones_counter <= 0;
-        last_one_position <= 0;
-        lane_counter <= 0;
-        
-        if(ones_counter < 16)begin
-            lines_array[ones_counter] <= lines_array[ones_counter] + 1;
-            if(lines_array[ones_counter] > most_frequent)begin
-                most_frequent <= ones_counter;
-                if(row <= IMG_LENGTH - 5)begin
-                save_lane_boundaries <= 1;
-                end
+    end else if(start_flag)begin
+        if (cluster_detected) begin
+            if (((lane_boundarie_accurence[0] > 0) &&
+            (column_counter + LANE_SPACING >= lane_boundaries[0]) &&
+            (column_counter <= lane_boundaries[0] + LANE_SPACING)) || lane_boundarie_accurence[0] == 0) begin
+                lane_boundaries[0] <= column_counter;
+                lane_boundarie_accurence[0] <= (lane_boundarie_accurence[0] < 1000) ? lane_boundarie_accurence[0] + 2 : lane_boundarie_accurence[0] ;
+        end else if (((lane_boundarie_accurence[1] > 0) &&
+            (column_counter + LANE_SPACING >= lane_boundaries[1]) &&
+            (column_counter <= lane_boundaries[1] + LANE_SPACING)) || lane_boundarie_accurence[1] == 0) begin
+                lane_boundaries[1] <= column_counter;
+                lane_boundarie_accurence[1] <= (lane_boundarie_accurence[1] < 1000) ? lane_boundarie_accurence[1] + 2 : lane_boundarie_accurence[1] ;
+        end else if (((lane_boundarie_accurence[2] > 0) &&
+            (column_counter + LANE_SPACING >= lane_boundaries[2]) &&
+            (column_counter <= lane_boundaries[2] + LANE_SPACING)) || lane_boundarie_accurence[2] == 0) begin
+                lane_boundaries[2] <= column_counter;
+                lane_boundarie_accurence[2] <= (lane_boundarie_accurence[2] < 1000) ? lane_boundarie_accurence[2] + 2 : lane_boundarie_accurence[2] ;
+        end else if (((lane_boundarie_accurence[3] > 0) &&
+            (column_counter + LANE_SPACING >= lane_boundaries[3]) &&
+            (column_counter <= lane_boundaries[3] + LANE_SPACING)) || lane_boundarie_accurence[3] == 0) begin
+                lane_boundaries[3] <= column_counter;
+                lane_boundarie_accurence[3] <= (lane_boundarie_accurence[3] < 1000) ? lane_boundarie_accurence[3] + 2 : lane_boundarie_accurence[3] ;
+        end else if (((lane_boundarie_accurence[4] > 0) &&
+            (column_counter + LANE_SPACING >= lane_boundaries[4]) &&
+            (column_counter <= lane_boundaries[4] + LANE_SPACING)) || lane_boundarie_accurence[4] == 0) begin
+                lane_boundaries[4] <= column_counter;
+                lane_boundarie_accurence[4] <= (lane_boundarie_accurence[4] < 1000) ? lane_boundarie_accurence[4] + 2 : lane_boundarie_accurence[4] ;
+        end 
+    end else begin
+           if ((lane_boundaries[0] == column_counter) && (lane_boundarie_accurence[0] > 0) ) begin
+                lane_boundarie_accurence[0] <= lane_boundarie_accurence[0] - 1;
+            end else if ((lane_boundaries[1] == column_counter) && (lane_boundarie_accurence[1] > 0)) begin
+                lane_boundarie_accurence[1] <= lane_boundarie_accurence[1] - 1;
+            end else if ((lane_boundaries[2] == column_counter) && (lane_boundarie_accurence[2] > 0)) begin
+                lane_boundarie_accurence[2] <= lane_boundarie_accurence[2] - 1;
+            end else if ((lane_boundaries[3] == column_counter) && (lane_boundarie_accurence[3] > 0)) begin
+                lane_boundarie_accurence[3] <= lane_boundarie_accurence[3] - 1;
+            end else if ((lane_boundaries[4] == column_counter) && (lane_boundarie_accurence[4] > 0)) begin
+                lane_boundarie_accurence[4] <= lane_boundarie_accurence[4] - 1;
             end 
         end
-    end
+    end 
+end
 
-    if(row >= IMG_LENGTH-1)begin
-            prossing_last_row <=1;
-            row <= 0;
-            number_of_lanes <= most_frequent - 1;
-            save_current_lane <= 1;
+always_ff @(posedge clk or negedge rst_n) begin : the_cluster_estimation
+    if (!rst_n) begin
+        cluster_detected <= 1'b0;
+        last_cluster_detected <= 1'b0;
+    end else begin
+        // Check for cluster of 5 consecutive 1s in the window
+        if ((consecutive_ones == LINE_WIDTH) && ((row_counter >= 3) && (row_counter <= IMG_LENGTH - 3)) && (column_counter-last_cluster_detected >= 5)) begin
+            cluster_detected <= 1'b1;
+            last_cluster_detected <= column_counter;
+        end else begin
+            cluster_detected <= 1'b0;
+        end
+        if(column_counter >= IMG_WIDTH - 1)begin
+            last_cluster_detected <= 1'b0;
+        end
+    end
+end
+
+
+/********************************************************************************************************************
+********************************************************************************************************************/
+
+    // Sample filtered boundaries 
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        for (int i = 0; i < 5; i++) lane_boundaries_filtered_r[i] <= 0;
+        start_filtering <= 0;
+    end else if(column_counter == 0 && row_counter == IMG_LENGTH-3)begin
+        start_filtering <= 1;
+    end else if (column_counter == IMG_WIDTH-1 && row_counter == IMG_LENGTH-2) begin
+        for (int i = 0; i < 5; i++) begin
+            lane_boundaries_filtered_r[i] <= lane_boundaries_filtered[i];
+        end
+    end else begin
+        start_filtering <= 0;
+    end
+end
+
+    /*find the number of lanes and current lane*/
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        lines_number        <= 0;
+        right_lines_number  <= 0;
+        out_stage_counter   <= 0;
+    end else if (column_counter >= IMG_WIDTH-5 && row_counter == IMG_LENGTH-1) begin
+        if (lane_boundaries_filtered_r[out_stage_counter] > 0)begin
+            lines_number <= lines_number + 1;
         end
 
-end else begin
-    prossing_last_row <= 0;
-    save_lane_boundaries <= 0;
-    save_current_lane <= 0;
+        if (lane_boundaries_filtered_r[out_stage_counter] > IMAGE_CENTER)begin
+            right_lines_number <= right_lines_number + 1;
+        end
+
+        out_stage_counter <= out_stage_counter + 1;
+    end else if(row_counter == 1) begin
+        lines_number        <= 0;
+        right_lines_number  <= 0;
+        out_stage_counter   <= 0;
+    end
 end
+
+    /*find the current lane boundaries*/
+always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        current_lane_left_boundry  <= 0;
+        current_lane_right_boundry <= IMG_WIDTH;
+    end else if (column_counter >= IMG_WIDTH-5 && row_counter == IMG_LENGTH-1) begin
+        if ((lane_boundaries_filtered_r[out_stage_counter] < IMAGE_CENTER) && (current_lane_left_boundry < lane_boundaries_filtered_r[out_stage_counter]))begin
+            current_lane_left_boundry = lane_boundaries_filtered_r[out_stage_counter];
+        end
+
+        if ((lane_boundaries_filtered_r[out_stage_counter] > IMAGE_CENTER) && (current_lane_right_boundry > lane_boundaries_filtered_r[out_stage_counter]))begin
+            current_lane_right_boundry = lane_boundaries_filtered_r[out_stage_counter];
+        end
+    end else if(row_counter == 1) begin
+        current_lane_left_boundry  <= 0;
+        current_lane_right_boundry <= IMG_WIDTH;
+    end
 end
 
 
-always_ff @(posedge clk or negedge rst_n) begin : calc_lane_boundaries
+always_ff @(posedge clk or negedge rst_n) begin : drive_the_valid_signal
 if(!rst_n)begin
-    for (int i = 0; i < 16; i = i + 1) begin
-            most_frequent_lane_boundaries[i] <= 1'b0;  // Initialize all elements to zero
-    end
-end else if(save_lane_boundaries)begin
-    for (int i = 0; i < 16; i = i + 1) begin
-            most_frequent_lane_boundaries[i] <= lane_boundaries[i];  // Initialize all elements to zero
-    end
-    
-end 
-end
-
-always_ff @(posedge clk or negedge rst_n) begin : calc_current_lane_and_position
-if(!rst_n)begin
-    current_lane <= 0;
-    current_lane_left_boundary <= 0;
-    current_lane_right_boundary<= 0;
-    decision_out_valid <= 0;
-end else if(save_current_lane)begin
-    for (int i = 0; i < 15; i = i + 1) begin
-            if(most_frequent_lane_boundaries[15-i] > MIDDLE_OF_THE_IMG)begin
-                current_lane <= 15-i;
-                current_lane_left_boundary  <= most_frequent_lane_boundaries[14-i];
-                current_lane_right_boundary <= most_frequent_lane_boundaries[15-i];
-            end
-    end
-    decision_out_valid <= 1;
+    decision_out_valid <= 1'b0;
+end else if(column_counter == IMG_WIDTH-1 && row_counter == IMG_LENGTH-1)begin
+    decision_out_valid <= 1'b1;
 end else begin
-    decision_out_valid <= 0;
+    decision_out_valid <= 1'b0;
 end
 end
 
+// Number of lanes = number of boundaries - 1
+assign    number_of_lanes = (lines_number > 1) ? (lines_number - 1) : 1;
+assign    current_lane = (lines_number > right_lines_number) ? (lines_number - right_lines_number) : 1;
 
 
 endmodule

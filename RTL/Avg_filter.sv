@@ -18,27 +18,6 @@
 // from three rows (previous, current, and next rows) of pixels to form a 3x3 window. 
 // This window is used for calculating the average pixel value in the current clock cycle.
 //
-// Parameters:
-// - IMG_WIDTH    : Width of the input image in pixels (default: 640).
-// - IMG_LENGTH   : Height of the input image in pixels (default: 640).
-// - PIXEL_SIZE   : Bit-width of each grayscale pixel (default: 8).
-//
-// Inputs:
-// - clk          : Clock signal for synchronization with other modules.
-// - rst_n        : Active-low reset signal to initialize the module signals.
-// - converter_data_valid : Indicates that the grayscale pixel data is valid and ready for processing.
-// - pixel_in     : A grayscale pixel input from the RGB to grayscale converter module.
-//
-// FIFO Interfaces:
-// 1. **Sobel FIFO Interface:**
-//    - avr_sobel_fifo_wr_en    : Enables FIFO write operation when high.
-//    - avr_sobel_fifo_wr_data  : Data to be written to the Sobel FIFO (filtered pixel).
-//    - avr_sobel_fifo_full     : FIFO full indicator (high when FIFO is full).
-//    - avr_sobel_fifo_empty    : FIFO empty indicator (high when FIFO is empty).
-//    - avr_sobel_wr_ack        : Acknowledgment for successful write operations to Sobel FIFO.
-//    - avr_sobel_rd_ack        : Acknowledgment for successful read operations from Sobel FIFO.
-//    - avr_sobel_fifo_data_count : Number of data elements in the FIFO.
-//
 // 2. **Previous Row FIFO (for the previous row's pixel data):**
 //    - local_fifo_* signals (wr_en, wr_data, rd_en, rd_data, full, empty, ack) track FIFO status.
 //
@@ -48,10 +27,7 @@
 // 4. **Current Row FIFO (for the current row's pixel data being processed):**
 //    - local_fifo_* signals (wr_en, wr_data, rd_en, rd_data, full, empty, ack) track FIFO status.
 //
-// States:
-// - IDLE       : The module is waiting for valid data to process.
-// - WRITE_DATA : The module is processing and writing the data to the Sobel filter FIFO.
-//
+
 // Shift Register Module (3x3 Window) Instantiation:
 // - The shift register collects data from the previous, current, and next rows 
 //   to form a 3x3 window for averaging. The resulting window is used in the 
@@ -66,19 +42,19 @@ module Avg_filter #(
 (
     input clk,                                        // The Clk signal of the Design which used in the Synchronization with the other modules.
     input rst_n,                                      // A reset signal to reset the whole signals of the design to nulls.
-    input converter_data_valid,                                   // A signal from the memory that indicates it valided saving the image.
-    input [PIXEL_SIZE-1:0] pixel_in,                   // The input Greyscale Pixel from the memory.
-    output reg converter_read_ready,                                 // Signal to indicate when the Converter should send it's Pixel.
+    
+    //FIFO interface for the gray pixels
+    output logic                           cnv_avr_fifo_rd_en  ,   //when enabled the fifo gives data out
+    input  logic [PIXEL_SIZE-1:0]          cnv_avr_fifo_rd_data,   //the data to be read from the fifo
+    input  logic                           cnv_avr_fifo_full    ,   //fifo full indicator    
+    input  logic                           cnv_avr_fifo_empty   ,   //fifo empty indicator
+    input  logic                           cnv_avr_wr_ack        ,   //ack signal to make sure the write operations is done right.
+    input  logic                           cnv_avr_rd_ack         ,   //ack signal to make sure the read operations is done right. 
+    input  logic [$clog2(IMG_WIDTH):0]     cnv_avr_fifo_data_count ,
 
-    //FIFO interface
-    output logic                           avr_sobel_fifo_wr_en  ,   //when enabled the FIFO takes data in
-    output logic [PIXEL_SIZE-1:0]          avr_sobel_fifo_wr_data,   //the data to be written to the FIFO
-    input  logic                           avr_sobel_fifo_full    ,   //FIFO full indicator    
-    input  logic                           avr_sobel_fifo_empty   ,   //FIFO empty indicator
-    input  logic                           avr_sobel_wr_ack        ,   //ack signal to make sure the write operation is done right.
-    input  logic                           avr_sobel_rd_ack         ,   //ack signal to make sure the read operation is done right. 
-    input  logic [$clog2(IMG_WIDTH):0]   avr_sobel_fifo_data_count     //the number of data stored in the FIFO
-
+    //interface with the sobel filter
+    output logic                           avr_data_valid  ,   //when enabled the FIFO takes data in
+    output logic [PIXEL_SIZE-1:0]          avr_data_out   //the data to be written to the FIFO
 );
 
 //local FIFO interface for storing the last row in the previous operation as it is needed in further processing
@@ -113,30 +89,21 @@ module Avg_filter #(
     logic                           local_wr_ack_crnt       ;   //ack signal to make sure the write operations is done right.
     logic                           local_rd_ack_crnt       ;   //ack signal to make sure the read operations is done right. 
     logic [$clog2(IMG_WIDTH):0]   local_fifo_data_count_crnt;    
-    
-
-typedef enum logic  {
-    IDLE,
-    WRITE_DATA
-} buffer_write_t;       
-
-buffer_write_t w_buff_cs,w_buff_ns;
             
- logic [2:0] Buffer_index;
- logic en_index_sample;
- logic start_flag;
- logic [PIXEL_SIZE+8:0] global_fifo_r;
+    logic [2:0] Buffer_index;
+    logic start_flag;
+    logic [PIXEL_SIZE+8:0] global_fifo_r;
 
- logic [PIXEL_SIZE-1:0] avr_window_out [0:2][0:2]; // 3x3 output window
- logic                 pixel_valid;  // New column available
- logic [$clog2(IMG_WIDTH):0] shift_count;
+    logic [PIXEL_SIZE-1:0] avr_window_out [0:2][0:2]; // 3x3 output window
+    logic                 pixel_valid;  // New column available
+    logic [$clog2(IMG_WIDTH):0] shift_count;
 
- logic [$clog2(IMG_LENGTH):0] row;
+    logic [$clog2(IMG_LENGTH):0] row;
 
-logic last_column,before_last_column; //to indicate the last column and the column before it to control fifos
+    logic last_column,before_last_column; //to indicate the last column and the column before it to control fifos
 
 
-logic [PIXEL_SIZE-1:0] prv_fifo_r,crnt_fifo_r,nxt_fifo_r;
+    logic [PIXEL_SIZE-1:0] prv_fifo_r,crnt_fifo_r,nxt_fifo_r;
 
 
 
@@ -147,76 +114,25 @@ logic [PIXEL_SIZE-1:0] prv_fifo_r,crnt_fifo_r,nxt_fifo_r;
 
 //the data that will be stored in the buffer is the input pixels and the prv FIFO takes data from FIFO 4 always
 assign local_fifo_wr_data_prv = local_fifo_rd_data_crnt;
-assign local_fifo_wr_data_crnt=(Buffer_index == 1) ? pixel_in :local_fifo_rd_data_nxt;
-assign local_fifo_wr_data_nxt=pixel_in;
+assign local_fifo_wr_data_crnt=(Buffer_index == 1) ? cnv_avr_fifo_rd_data :local_fifo_rd_data_nxt;
+assign local_fifo_wr_data_nxt=cnv_avr_fifo_rd_data;
 
-assign avr_sobel_fifo_wr_data = global_fifo_r;
-
+assign avr_data_out = ((global_fifo_r >> 4) + (global_fifo_r >> 5)  + (global_fifo_r >> 6) + (global_fifo_r >> 10));
+assign avr_data_valid = (pixel_valid && shift_count > 3);
 //flags for the calculations
 assign last_column = (shift_count >= IMG_WIDTH+2) ? 1 : 0; //detect the last column of the image
 assign before_last_column = (shift_count >= IMG_WIDTH) ? 1 : 0; //detect the before last column of the image
 
+
+assign Buffer_index = (start_flag == 0 && !local_fifo_full_crnt) ? 1 : 
+                (!local_fifo_full_nxt ? 2 : 0);
+
 //choose which FIFO to write data into
 
 always_comb begin : demux_the_wr_en
-    local_fifo_wr_en_crnt=(Buffer_index == 1) ? converter_data_valid : local_rd_ack_nxt;
+    local_fifo_wr_en_crnt=(Buffer_index == 1) ? cnv_avr_rd_ack : local_rd_ack_nxt;
     local_fifo_wr_en_prv=(row == IMG_LENGTH - 1 ) ? 0 : local_rd_ack_crnt;
-    local_fifo_wr_en_nxt = (Buffer_index == 2) ? converter_read_ready && converter_data_valid || w_buff_ns==IDLE && converter_data_valid  : 0;
-    avr_sobel_fifo_wr_en = (!avr_sobel_fifo_full && pixel_valid && shift_count > 3);
-end
-
-// State transation logic
-
-always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-        w_buff_cs <= IDLE; 
-    end else begin 
-        w_buff_cs <= w_buff_ns;
-    end
-end
-
-
-always_comb begin : Next_State_logic      
-    en_index_sample = 0;
-    case (w_buff_cs)
-        IDLE : begin
-            if(!local_fifo_full_nxt) begin
-                en_index_sample = 1;
-                w_buff_ns = WRITE_DATA;
-            end else begin
-                w_buff_ns = IDLE;
-            end
-        end
-        WRITE_DATA: begin
-            if((local_fifo_data_count_nxt == IMG_WIDTH-1) || (local_fifo_data_count_crnt  == IMG_WIDTH-1 && Buffer_index == 1))begin
-             w_buff_ns = IDLE;
-            end else begin
-             w_buff_ns = WRITE_DATA;
-            end
-        end
-        default: w_buff_ns = IDLE;
-    endcase
-end  
-
-
-always_comb begin : output_logic
-    case (w_buff_cs)
-        IDLE:         converter_read_ready = 0;
-        WRITE_DATA:   converter_read_ready = (w_buff_ns == IDLE) ? 0 : 1;
-        default:      converter_read_ready = 0;
-    endcase
-end
-
-
-
-/*sample the index of the buffer that the data is going to be writen into */
-  always_ff @(posedge clk or negedge rst_n) begin : line_index_sample
-    if (!rst_n) begin
-        Buffer_index <= 0;
-    end else if (en_index_sample) begin
-        Buffer_index <= local_fifo_empty_crnt ? 1 : 
-                (!local_fifo_full_nxt ? 2 : 0);
-    end
+    local_fifo_wr_en_nxt = (Buffer_index == 2) ? cnv_avr_rd_ack: 0;
 end
 
 
@@ -302,10 +218,11 @@ assign pixel_valid = (local_rd_ack_crnt) || before_last_column;
     .count(local_fifo_data_count_crnt)        
 );
 
-//choose which FIFO to write data into
+//choose which FIFO to read data from
 
 always_comb begin : demux_the_rd_en
     
+    cnv_avr_fifo_rd_en    = (local_fifo_data_count_nxt <= IMG_WIDTH-2)? 1 : 0;
     local_fifo_rd_en_prv  = 0;
     local_fifo_rd_en_crnt = 0;
     local_fifo_rd_en_nxt  = 0;
@@ -329,19 +246,19 @@ else if(start_flag)begin
     if(shift_count>2)begin
         if(row == 0)begin
             
-        global_fifo_r <= ((avr_window_out[1][0] + avr_window_out[1][1] + avr_window_out[1][2] +
-                           avr_window_out[2][0] + avr_window_out[2][1] + avr_window_out[2][2] )*57)>>9;                           
+        global_fifo_r <=   avr_window_out[1][0] + avr_window_out[1][1] + avr_window_out[1][2] +
+                           avr_window_out[2][0] + avr_window_out[2][1] + avr_window_out[2][2];                           
         
         end else if(row == IMG_LENGTH-1) begin
 
-        global_fifo_r <= ((avr_window_out[0][0] + avr_window_out[0][1] + avr_window_out[0][2] +
-                           avr_window_out[1][0] + avr_window_out[1][1] + avr_window_out[1][2])*57)>>9;             
+        global_fifo_r <=   avr_window_out[0][0] + avr_window_out[0][1] + avr_window_out[0][2] +
+                           avr_window_out[1][0] + avr_window_out[1][1] + avr_window_out[1][2];             
 
         end else begin
 
-        global_fifo_r <=  ((avr_window_out[0][0] + avr_window_out[0][1] + avr_window_out[0][2]  +
+        global_fifo_r <=    avr_window_out[0][0] + avr_window_out[0][1] + avr_window_out[0][2]  +
                             avr_window_out[1][0] + avr_window_out[1][1] + avr_window_out[1][2]  +
-                            avr_window_out[2][0] + avr_window_out[2][1] + avr_window_out[2][2] )*57)>>9;                
+                            avr_window_out[2][0] + avr_window_out[2][1] + avr_window_out[2][2];                
         end     
     end
     
@@ -353,14 +270,14 @@ else if(start_flag)begin
     end
 
 
-    if(avr_sobel_fifo_full || (local_fifo_empty_nxt && local_fifo_empty_crnt && shift_count==IMG_WIDTH+3))begin
+    if((local_fifo_empty_nxt && local_fifo_empty_crnt && shift_count==IMG_WIDTH+3))begin
         start_flag <= 0;
         if(local_fifo_empty_nxt && local_fifo_empty_crnt && shift_count==IMG_WIDTH+3)begin
             row <= 0 ;
         end
     end
 end else begin
-    if(local_fifo_data_count_nxt > 3 && !avr_sobel_fifo_full)begin
+    if(local_fifo_data_count_nxt > 3)begin
         start_flag <= 1;
     end
 end
