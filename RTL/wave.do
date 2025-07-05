@@ -99,3 +99,7 @@ sim:/tb_LD_Wrapper/ld_wrapper_inst/decision_inst/lane_boundaries \
 sim:/tb_LD_Wrapper/ld_wrapper_inst/decision_inst/lane_counter \
 sim:/tb_LD_Wrapper/ld_wrapper_inst/decision_inst/most_frequent_lane_boundaries \
 sim:/tb_LD_Wrapper/ld_wrapper_inst/decision_inst/number_of_lanes
+add wave -position insertpoint  \
+sim:/tb_LD_Wrapper/current_lane \
+sim:/tb_LD_Wrapper/current_lane_left_boundry \
+sim:/tb_LD_Wrapper/current_lane_right_boundry

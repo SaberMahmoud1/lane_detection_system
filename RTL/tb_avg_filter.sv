@@ -3,14 +3,20 @@
 module tb_LD_Wrapper;
 
     // Parameters
-    parameter IMG_LENGTH = 400;  //image Hight should be multibles of 4
+    parameter NUMBER_OF_FRAMES = 1;
+    parameter IMG_LENGTH_ORIGINAL = 416;  //image Hight should be multibles of 4 the true image hight
     parameter IMG_WIDTH  = 416;  //image width could be any value biger than 4
     parameter PIXEL_SIZE = 8;
-    parameter THRESHOLD  = 22500;
-    parameter TOTAL_SIZE = IMG_WIDTH * IMG_LENGTH;
-    parameter AXI_WIDTH = 24;
-    
-    parameter PIXEL_GAP_THRESHOLD = 10;
+    parameter THRESHOLD1  = 10000;
+    parameter THRESHOLD2  = 50000;
+    parameter TOTAL_SIZE = IMG_WIDTH * IMG_LENGTH_ORIGINAL*NUMBER_OF_FRAMES;
+    parameter AXI_WIDTH  = 24;
+
+    parameter FRAME_START = 150;
+    parameter IMG_LENGTH_CROP = 150;   //the length of the croped image    
+    parameter PIXEL_GAP_THRESHOLD = 5;
+
+    parameter EXPECTED_LANE_COUNT = 2;
 
     // Testbench signals
     reg clk;
@@ -26,8 +32,11 @@ module tb_LD_Wrapper;
     logic [4-1:0]                   number_of_lanes; //indicates the number of lanes in the image
     logic [4-1:0]                   current_lane; //indicates the current  lane the car is in
     logic                           decision_out_valid; //indicates that the output of the decition module is valid
-    logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundary; //the left  boundary of the current lane in pixels
-    logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundary; //the right boundary of the current lane in pixels
+    logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundry; //the left  boundary of the current lane in pixels
+    logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundry; //the right boundary of the current lane in pixels
+
+    logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundary_array[NUMBER_OF_FRAMES]; //the left  boundary of the current lane in pixels
+    logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundary_array[NUMBER_OF_FRAMES]; //the right boundary of the current lane in pixels
     
     logic sobel_result1;
     logic sobel_result2;
@@ -36,8 +45,8 @@ module tb_LD_Wrapper;
     logic s_axi_video_tlast;
 
     reg [AXI_WIDTH-1:0] pixel_array_out [TOTAL_SIZE]; // 2D array for pixels
-    int k = 0;
 
+    reg sobel_out_array [IMG_WIDTH * IMG_LENGTH_CROP * NUMBER_OF_FRAMES]; // 2D array for pixels
     
     class PixelGen;
     rand bit [7:0] pixel_in;  // 8-bit random pixel value
@@ -49,20 +58,20 @@ module tb_LD_Wrapper;
 
     reg [24-1:0] pixel_array [TOTAL_SIZE]; // 2D array for pixels
 
-    PixelGen p = new();
-
     // Clock Generation
     always #5 clk = ~clk;  // 100MHz Clock (Period = 10ns)
 
     // DUT Instantiation
     LD_Wrapper #(
-    .THRESHOLD(THRESHOLD),          // Set the threshold for lane detection to 1600.
-    .IMG_LENGTH(IMG_LENGTH),           // Set the image height to 10 pixels.
+    .THRESHOLD1(THRESHOLD1),          // Set the threshold for lane detection to 1600.
+    .THRESHOLD2(THRESHOLD2),          // Set the threshold for lane detection to 1600.
+    .IMG_LENGTH(IMG_LENGTH_CROP),           // Set the image height to 10 pixels.
     .IMG_WIDTH(IMG_WIDTH),            // Set the image width to 10 pixels.
     .PIXEL_SIZE(PIXEL_SIZE),            // Set the pixel size to 8 bits.
     .AXI_WIDTH(24),            // Set the AXI stream data width to 48 bits.
     .RGB_WIDTH(24),             // Set the RGB width to 24 bits (8 bits per channel).
-    .PIXEL_GAP_THRESHOLD(PIXEL_GAP_THRESHOLD)
+    .PIXEL_GAP_THRESHOLD(PIXEL_GAP_THRESHOLD),
+    .FRAME_START(FRAME_START)
 ) ld_wrapper_inst (
      //system interface
     .clk(clk),// The Clk signal of the Design which used in the Synchronization with the other modules.
@@ -72,8 +81,8 @@ module tb_LD_Wrapper;
     .number_of_lanes(number_of_lanes), //indicates the number of lanes on the road
     .current_lane(current_lane), //indicates the current  lane the car is in
     .decision_out_valid(decision_out_valid), //indicates that the output of the decision module is valid
-    .current_lane_left_boundary(current_lane_left_boundary), //the left  boundary of the current lane in pixels
-    .current_lane_right_boundary(current_lane_right_boundary), //the right boundary of the current lane in pixels
+    .current_lane_left_boundry(current_lane_left_boundry), //the left  boundary of the current lane in pixels
+    .current_lane_right_boundry(current_lane_right_boundry), //the right boundary of the current lane in pixels
 
     /* AXI Stream Interface */
     .s_axi_video_tdata(pixel_in),
@@ -84,9 +93,10 @@ module tb_LD_Wrapper;
 
 
 
-    int i=0;
+    logic [$clog2(IMG_LENGTH_ORIGINAL * IMG_WIDTH * NUMBER_OF_FRAMES):0] i = 0;
     reg [9:0] counter=0;
-    int file,status;
+
+    int correct_counter = 0,error_counter = 0;
 
 
     // Test Sequence
@@ -103,7 +113,7 @@ module tb_LD_Wrapper;
         rst_n = 1;
        
     //    // Test case: Send a single pixel
-    //     while(i < IMG_LENGTH * IMG_WIDTH)begin
+    //     while(i < IMG_LENGTH_ORIGINAL * IMG_WIDTH)begin
     //     converter_data_valid = 1;
     //     // pixel_in = pixel_array[i];
     //     @(posedge clk);
@@ -126,41 +136,62 @@ module tb_LD_Wrapper;
     //     end
     //     end
        
+    repeat (NUMBER_OF_FRAMES)begin
+      #1749130;
+    end
+        
+        $writememh("memory_dump.txt", sobel_out_array);
+        // $writememh("gray_out.txt", ld_wrapper_inst.cnv_avr_fifo_inst.mem);
+        $writememh("left_boundary.txt", current_lane_left_boundary_array);
+        $writememh("right_boundary.txt", current_lane_right_boundary_array);
 
-    #10000000;
-        
-        $writememh("memory_dump.txt", ld_wrapper_inst.decision_sobel_fifo_inst.mem);
-        $fdisplay($fopen("left_boundary.txt", "w"), "%0d", current_lane_left_boundary);
-        $fdisplay($fopen("right_boundary.txt", "w"), "%0d", current_lane_right_boundary);
-        
+        $display("lane count correct = %d \n lane count wrong = %d",correct_counter,error_counter);
        
          $stop;
     end
+assign pixel_in = pixel_array[i];
 
 always_ff @( posedge clk ) begin : blockName
-        // converter_data_valid <= 0;
-        if(converter_read_ready && i < IMG_LENGTH * IMG_WIDTH)begin
+            converter_data_valid <= 1;            
+        if(converter_read_ready && i < TOTAL_SIZE)begin
             i<=i+1;
             s_axi_video_tlast <= 0;
-            p.randomize();
-            converter_data_valid <= 1;
-            pixel_in <= pixel_array[i];
              // tlast is high at the last pixel in each row
             if ((i % IMG_WIDTH) == IMG_WIDTH - 1) begin
             s_axi_video_tlast <= 1;
             end 
         end
-        if(i >= IMG_LENGTH * IMG_WIDTH)begin
+        else begin
             converter_data_valid <= 0;
         end
     end
 
+int k =0;
+always_ff @(posedge clk) begin
+    if(decision_out_valid)begin
+       k <= k+1;
+       current_lane_left_boundary_array[k] <= current_lane_left_boundry;
+       current_lane_right_boundary_array[k] <= current_lane_right_boundry;
+       if(number_of_lanes == EXPECTED_LANE_COUNT)begin
+        correct_counter++;
+       end else begin
+        error_counter++;
+       end
+    end
+    end
+int l =0;
 
+always_ff @(posedge clk) begin
+    if(ld_wrapper_inst.decision_inst.start_flag)begin
+        sobel_out_array[l] <= ld_wrapper_inst.decision_inst.first_threshold_sobel_result;
+        l <= l+1;
+    end
+end
 
 // logic [20:0] ccounter = 1;
 // always_ff @( posedge clk && start_of_line ) begin : blockName
 //         converter_data_valid <= 0;
-//         if(converter_read_ready && i < IMG_LENGTH * IMG_WIDTH)begin
+//         if(converter_read_ready && i < IMG_LENGTH_ORIGINAL * IMG_WIDTH)begin
 //             i<=i+1;
 //             converter_data_valid <= 1;
 //             pixel_in <= pixel_array[i]; 
@@ -188,5 +219,4 @@ always_ff @( posedge clk ) begin : blockName
 // end
 
 endmodule
-
 

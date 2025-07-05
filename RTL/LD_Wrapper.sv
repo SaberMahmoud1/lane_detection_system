@@ -26,13 +26,15 @@
 // - **Decision Module:** Analyzes the edge-detected image to make decisions about the presence of lanes.
 ////////////////////////////////////////////////////////////////////////////////
 module LD_Wrapper # (
-    parameter THRESHOLD      = 22500,
-    parameter IMG_LENGTH     = 416  ,
+    parameter THRESHOLD1      = 10000,
+    parameter THRESHOLD2      = 50000,
+    parameter IMG_LENGTH     = 150  ,
     parameter IMG_WIDTH      = 416  , 
     parameter PIXEL_SIZE     = 8   ,
     parameter AXI_WIDTH      = 24  ,    
     parameter RGB_WIDTH      =24   ,
-    parameter PIXEL_GAP_THRESHOLD = 10
+    parameter PIXEL_GAP_THRESHOLD = 5,
+    parameter FRAME_START = 250
 
 
 ) (
@@ -44,8 +46,8 @@ module LD_Wrapper # (
     output logic [4-1:0] number_of_lanes, //indicates the number of lanes on the road
     output logic [4-1:0] current_lane, //indicates the current  lane the car is in
     output logic         decision_out_valid, //indicates that the output of the decision module is valid
-    output logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundary, //the left  boundary of the current lane in pixels
-    output logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundary, //the right boundary of the current lane in pixels
+    output logic [$clog2(IMG_WIDTH):0]     current_lane_left_boundry, //the left  boundary of the current lane in pixels
+    output logic [$clog2(IMG_WIDTH):0]     current_lane_right_boundry, //the right boundary of the current lane in pixels
 
     /* AXI Stream Interface */
     input  logic  [AXI_WIDTH-1:0] s_axi_video_tdata,
@@ -54,37 +56,34 @@ module LD_Wrapper # (
     input  logic  s_axi_video_tlast
 );
 
-        //FIFO interface
-    logic                           avr_sobel_fifo_wr_en   ;   //when enabled the fifo takes data in
-    logic  [PIXEL_SIZE-1:0]         avr_sobel_fifo_wr_data ;   //the data to be written to the fifo
-    logic                           avr_sobel_fifo_full    ;   //fifo full indicator    
-    logic                           avr_sobel_fifo_empty   ;   //fifo empty indicator
-    logic                           avr_sobel_fifo_rd_en  ;   //when enabled the fifo gives data out
-    logic [PIXEL_SIZE-1:0]          avr_sobel_fifo_rd_data ;  //the data to be read from the fifo
-    logic                           avr_sobel_wr_ack      ;   //ack signal to make sure the write operations is done right.
-    logic                           avr_sobel_rd_ack       ;   //ack signal to make sure the read operations is done right. 
-    logic [$clog2(IMG_WIDTH):0]     avr_sobel_fifo_data_count ;
+    //FIFO interface
+    logic                           cnv_avr_fifo_wr_en   ;   //when enabled the fifo takes data in
+    logic  [PIXEL_SIZE-1:0]         cnv_avr_fifo_wr_data ;   //the data to be written to the fifo
+    logic                           cnv_avr_fifo_full    ;   //fifo full indicator    
+    logic                           cnv_avr_fifo_empty   ;   //fifo empty indicator
+    logic                           cnv_avr_fifo_rd_en  ;   //when enabled the fifo gives data out
+    logic [PIXEL_SIZE-1:0]          cnv_avr_fifo_rd_data ;  //the data to be read from the fifo
+    logic                           cnv_avr_wr_ack      ;   //ack signal to make sure the write operations is done right.
+    logic                           cnv_avr_rd_ack       ;   //ack signal to make sure the read operations is done right. 
+    logic [$clog2(IMG_WIDTH):0]     cnv_avr_fifo_data_count ;
+
 
         //FIFO interface
-    logic                           decision_sobel_fifo_wr_en   ;   //when enabled the fifo takes data in
-    logic                           decision_sobel_fifo_wr_data ;   //the data to be written to the fifo
-    logic                           decision_sobel_fifo_full    ;   //fifo full indicator    
-    logic                           decision_sobel_fifo_empty   ;   //fifo empty indicator
-    logic                           decision_sobel_fifo_rd_en  ;   //when enabled the fifo gives data out
-    logic                           decision_sobel_fifo_rd_data ;  //the data to be read from the fifo
-    logic                           decision_sobel_wr_ack      ;   //ack signal to make sure the write operations is done right.
-    logic                           decision_sobel_rd_ack       ;   //ack signal to make sure the read operations is done right. 
-    logic [$clog2(IMG_WIDTH):0]     decision_sobel_fifo_data_count ;
+    logic                           avr_data_valid   ;   //when enabled the fifo takes data in
+    logic  [PIXEL_SIZE-1:0]         avr_data_out ;   //the data to be written to the fifo
 
-    logic converter_data_valid;                        // A signal from the memory that indicates it valided saving the image.
-    logic [PIXEL_SIZE-1:0] pixel_in;                   // The input Greyscale Pixel from the memory.
-    logic converter_read_ready;                        // Signal to indicate when the Converter should send it's Pixel.
+        //interface shared with decision and sobel
+    logic sobel_out_valid;
+    logic first_threshold_sobel_result;
+    logic second_threshold_sobel_result;
+
     logic valid_cnvrtr;
 
 
    /* The Instntiation of the rgb converter Module */
 imgcrop #(
-    .FRAME_HEIGHT(IMG_LENGTH)  // Set the desired cropped frame height
+    .FRAME_HEIGHT(IMG_LENGTH),
+    .FRAME_START(FRAME_START)  // Set the desired cropped frame height
 ) u_imgcrop (
     .clk                (clk),                  // System clock
     .rst_n              (rst_n),                // Active-low reset
@@ -96,6 +95,7 @@ imgcrop #(
 
    /* The Instntiation of the rgb converter Module */ 
 rgb_converter_axi #(
+    .IMG_WIDTH(IMG_WIDTH),
     .AXI_WIDTH(AXI_WIDTH),      // Set the AXI width to 48 bits.
     .RGB_WIDTH(RGB_WIDTH),      // Set the RGB width to 24 bits (8 bits per color channel).
     .GRAY_WIDTH(PIXEL_SIZE)       // Set the grayscale width to 8 bits.
@@ -109,9 +109,15 @@ rgb_converter_axi #(
     .s_axi_video_ready(s_axi_video_ready),   // AXI stream ready signal for video output.
 
     /* Outputs of the converter to the next stage */
-    .ready(converter_read_ready),               // Indicates if the converter is ready for the next pixel processing.
-    .valid(converter_data_valid),               // Indicates the validity of the grayscale pixel output.
-    .gray_pixel(pixel_in)      // Output grayscale pixel value.
+    //FIFO interface
+    .cnv_avr_fifo_wr_en(cnv_avr_fifo_wr_en)  ,   //when enabled the FIFO takes data in
+    .cnv_avr_fifo_wr_data(cnv_avr_fifo_wr_data),   //the data to be written to the FIFO
+    .cnv_avr_fifo_full(cnv_avr_fifo_full)    ,   //FIFO full indicator    
+    .cnv_avr_fifo_empty(cnv_avr_fifo_empty)   ,   //FIFO empty indicator
+    .cnv_avr_wr_ack     (cnv_avr_wr_ack)   ,   //ack signal to make sure the write operation is done right.
+    .cnv_avr_rd_ack      (cnv_avr_rd_ack)   ,   //ack signal to make sure the read operation is done right. 
+    .cnv_avr_fifo_data_count(cnv_avr_fifo_data_count)     //the number of data stored in the FIFO
+
 );
 
    
@@ -123,23 +129,25 @@ Avg_filter #(
 ) avg_filter_inst (
     .clk(clk),
     .rst_n(rst_n),
-    .converter_data_valid(converter_data_valid),  // Assuming `valid` is the data valid signal from the RGB converter
-    .pixel_in(pixel_in),
-    .converter_read_ready(converter_read_ready),
     
-    //fifo interface
-    .avr_sobel_fifo_wr_en(avr_sobel_fifo_wr_en),
-    .avr_sobel_fifo_wr_data(avr_sobel_fifo_wr_data),
-    .avr_sobel_fifo_full(avr_sobel_fifo_full),
-    .avr_sobel_fifo_empty(avr_sobel_fifo_empty),
-    .avr_sobel_wr_ack(avr_sobel_wr_ack),
-    .avr_sobel_rd_ack(avr_sobel_rd_ack),
-    .avr_sobel_fifo_data_count(avr_sobel_fifo_data_count)
+     //FIFO interface for the gray pixels
+    .cnv_avr_fifo_rd_en(cnv_avr_fifo_rd_en),   //when enabled the fifo gives data out
+    .cnv_avr_fifo_rd_data(cnv_avr_fifo_rd_data),   //the data to be read from the fifo
+    .cnv_avr_fifo_full(cnv_avr_fifo_full),   //fifo full indicator    
+    .cnv_avr_fifo_empty(cnv_avr_fifo_empty),   //fifo empty indicator
+    .cnv_avr_wr_ack(cnv_avr_wr_ack),   //ack signal to make sure the write operations is done right.
+    .cnv_avr_rd_ack (cnv_avr_rd_ack),   //ack signal to make sure the read operations is done right. 
+    .cnv_avr_fifo_data_count(cnv_avr_fifo_data_count),
+    
+    //sobel interface
+    .avr_data_valid(avr_data_valid),
+    .avr_data_out(avr_data_out)
 );
 
 /* The Instntiation of the sobel Filter Module */ 
 sobel_filter #(
-    .THRESHOLD(THRESHOLD),
+    .THRESHOLD1(THRESHOLD1),
+    .THRESHOLD2(THRESHOLD2),
     .IMG_LENGTH(IMG_LENGTH), 
     .IMG_WIDTH(IMG_WIDTH), 
     .PIXEL_SIZE(PIXEL_SIZE)
@@ -147,91 +155,56 @@ sobel_filter #(
     .clk(clk),
     .rst_n(rst_n),
     
-    //fifo interface
-    .avr_sobel_fifo_full(avr_sobel_fifo_full),
-    .avr_sobel_fifo_empty(avr_sobel_fifo_empty),
-    .avr_sobel_fifo_rd_en(avr_sobel_fifo_rd_en),
-    .avr_sobel_fifo_rd_data(avr_sobel_fifo_rd_data),
-    .avr_sobel_wr_ack(avr_sobel_wr_ack),
-    .avr_sobel_rd_ack(avr_sobel_rd_ack),
-    .avr_sobel_fifo_data_count(avr_sobel_fifo_data_count),
+    //average filter interface
+    .avr_data_valid(avr_data_valid),
+    .avr_data_out(avr_data_out),
     
-    //fifo interface
-    .decision_sobel_fifo_wr_en(decision_sobel_fifo_wr_en),
-    .decision_sobel_fifo_wr_data(decision_sobel_fifo_wr_data),
-    .decision_sobel_fifo_full(decision_sobel_fifo_full),
-    .decision_sobel_fifo_empty(decision_sobel_fifo_empty),
-    .decision_sobel_wr_ack(decision_sobel_wr_ack),
-    .decision_sobel_rd_ack(decision_sobel_rd_ack),
-    .decision_sobel_fifo_data_count(decision_sobel_fifo_data_count)
+    //interface shared with decision and sobel
+    .sobel_out_valid(sobel_out_valid),
+    .first_threshold_sobel_result(first_threshold_sobel_result),
+    .second_threshold_sobel_result(second_threshold_sobel_result)
+
 );
 
 // Instantiate the decision module
     decision #(
         .PIXEL_GAP_THRESHOLD(PIXEL_GAP_THRESHOLD),
         .IMG_WIDTH(IMG_WIDTH),
-        .IMG_LENGTH(IMG_LENGTH),
-        .PIXEL_SIZE(PIXEL_SIZE)
+        .IMG_LENGTH(IMG_LENGTH)
     ) decision_inst (
         .clk(clk),
         .rst_n(rst_n),
         
-        //fifo interface
-        .decision_sobel_fifo_rd_en(decision_sobel_fifo_rd_en),
-        .decision_sobel_fifo_rd_data(decision_sobel_fifo_rd_data),
-        .decision_sobel_fifo_full(decision_sobel_fifo_full),
-        .decision_sobel_fifo_empty(decision_sobel_fifo_empty),
-        .decision_sobel_wr_ack(decision_sobel_wr_ack),
-        .decision_sobel_rd_ack(decision_sobel_rd_ack),
-        .decision_sobel_fifo_data_count(decision_sobel_fifo_data_count),
+        //interface shared with decision and sobel
+        .sobel_out_valid(sobel_out_valid),
+        .first_threshold_sobel_result(first_threshold_sobel_result),
+        .second_threshold_sobel_result(second_threshold_sobel_result),
 
         //speed control unit interface
         .number_of_lanes(number_of_lanes),
         .decision_out_valid(decision_out_valid),
         .current_lane(current_lane),
-        .current_lane_left_boundary(current_lane_left_boundary),
-        .current_lane_right_boundary(current_lane_right_boundary)
+        .current_lane_left_boundry(current_lane_left_boundry),
+        .current_lane_right_boundry(current_lane_right_boundry)
     );
-
 
 /* FIFO Line-Buffers to store rows of pixels */
 
         FIFO #(
             .FIFO_WIDTH(PIXEL_SIZE),  
             .FIFO_DEPTH(IMG_WIDTH)   
-        ) avr_sobel_fifo_inst (
+        ) cnv_avr_fifo_inst (
             .clk(clk),                
             .rst_n(rst_n),            
-            .wr_en(avr_sobel_fifo_wr_en),    
-            .rd_en(avr_sobel_fifo_rd_en),    
-            .data_in(avr_sobel_fifo_wr_data),  
-            .data_out(avr_sobel_fifo_rd_data),
-            .full(avr_sobel_fifo_full),      
-            .empty(avr_sobel_fifo_empty),    
-            .wr_ack(avr_sobel_wr_ack),       
-            .rd_ack(avr_sobel_rd_ack),
-            .count(avr_sobel_fifo_data_count)        
+            .wr_en(cnv_avr_fifo_wr_en),    
+            .rd_en(cnv_avr_fifo_rd_en),    
+            .data_in(cnv_avr_fifo_wr_data),  
+            .data_out(cnv_avr_fifo_rd_data),
+            .full(cnv_avr_fifo_full),      
+            .empty(cnv_avr_fifo_empty),    
+            .wr_ack(cnv_avr_wr_ack),       
+            .rd_ack(cnv_avr_rd_ack),
+            .count(cnv_avr_fifo_data_count)        
         );
-
     
-/* Decision sobel FIFO Line-Buffers to store rows of pixels */
-
-        FIFO #(
-            .FIFO_WIDTH(1),  
-            .FIFO_DEPTH(IMG_WIDTH * IMG_LENGTH)   
-        ) decision_sobel_fifo_inst (
-            .clk(clk),                
-            .rst_n(rst_n),            
-            .wr_en(decision_sobel_fifo_wr_en),    
-            .rd_en(decision_sobel_fifo_rd_en),    
-            .data_in(decision_sobel_fifo_wr_data),  
-            .data_out(decision_sobel_fifo_rd_data),
-            .full(decision_sobel_fifo_full),      
-            .empty(decision_sobel_fifo_empty),    
-            .wr_ack(decision_sobel_wr_ack),       
-            .rd_ack(decision_sobel_rd_ack),
-            .count(decision_sobel_fifo_data_count)        
-        );
-        
-
 endmodule
