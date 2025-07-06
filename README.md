@@ -1,4 +1,4 @@
-A complete RTL lane detection system that processes road images through RGB-to-grayscale conversion, averaging filter, Sobel edge detection,
+A complete hardware compatible (tested on PYNQ z2 && ZCU102 FBGAs) RTL lane detection system that processes road images through RGB-to-grayscale conversion, averaging filter, Sobel edge detection,
 and decision logic to identify lane count, boundaries, and current lane position.
 A. Stage 1: RGB to Gray Converter 
 This stage is the interface between the system and the input 
